@@ -162,7 +162,7 @@ class PGDumpParser(object):
         possible = [
             "first_name",
             "last_name",
-            "midle_name",
+            "middle_name",
             "ssn",
             "social_security",
             "zip_code",
