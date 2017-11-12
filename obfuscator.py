@@ -82,21 +82,33 @@ class PGDumpParser(object):
         "timestamp without time zone": DateObfuscator(S, "timestamp without time zone"),
         "date": DateObfuscator(S, "date"),
     }
-
     stop_words = ("DEFAULT", "NOT")
     char_types = ("character", "char", "text")
 
-    def __init__(self):
+
+    def __init__(self, foreign_keys=[]):
         self.schema = {}
         self.current_table = None
         self.column_idx = 0
+        self.foreign_keys = foreign_keys
+        if self.foreign_keys is not None:
+            self.map_fk_schema()
+
+    def map_fk_schema(self):
+        self.foreign_keys = [item for sublist in self.foreign_keys for item in sublist]
+        for f in self.foreign_keys:
+            table_name, column_name = f.split(".")
+            self.schema[table_name] = {
+                column_name: (column_name, Obfuscrator(self.S))
+            }
 
     def parse(self, line):
-        if self.current_table is None and "CREATE TABLE" in line:
+        create = "CREATE TABLE"
+        if self.current_table is None and create in line:
             self.map_schema_table(line)
 
         # column line
-        if self.current_table is not None:
+        if self.current_table is not None and create not in line:
             self.map_schema_column(line)
             self.column_idx += 1
 
@@ -109,7 +121,8 @@ class PGDumpParser(object):
         line = line.split()
         for w in line:
             if "CREATE" in create_table and "TABLE" in create_table:
-                self.schema[w] = {}
+                if w not in self.schema:
+                    self.schema[w] = {}
                 self.current_table = w
                 break
             create_table.append(w)
@@ -121,8 +134,17 @@ class PGDumpParser(object):
         if self.is_personal_info(column_name):
             self.map_schema_column_obfuscated(column_name, column_line)
 
-        #XXX TODO
-        #if column_name in self.forced
+        # account for forced FKs
+        possible_cache_key = self.current_table + "." + column_name
+        if possible_cache_key in self.foreign_keys:
+            # remove the column_name from schema.table_name
+            # this dict is index based.
+            column_info = self.schema[self.current_table].pop(column_name)
+            obfuscator = column_info[-1]
+            column_info = {
+                self.column_idx: (column_name, obfuscator),
+            }
+            self.schema[self.current_table].update(column_info)
 
     def map_schema_column_obfuscated(self, column_name, column_line):
         obfuscator = None
@@ -150,7 +172,6 @@ class PGDumpParser(object):
                 column_data_type,
                 None,
             )
-
         if obfuscator is None:
             msg = "PG datatype: {} not configured".format(column_data_type)
             raise Exception(msg)
@@ -181,62 +202,133 @@ class PGDumpParser(object):
 
 
 class PGDumpObfuscator(object):
-    ENDLINE = "\\.\n"
     COPY_DELIM = "\t"
+    ENDLINE = "\\."
+    NULL = "\\N"
 
-    def __init__(self, dump_file, parser):
+    def __init__(self, dump_file, parser, foreign_keys=[]):
         self.dump_file = dump_file
         self.parser = parser
+        self.foreign_keys = foreign_keys
+        self.cache = {}
+        self.cache_set = set([])
 
     def get_table(self, line):
         table = line.split(" ")[1]
         return table
-        #return self.parser.schema.get(table, None)
+
+    def _set_cache_keys(self):
+
+        _has_schema = lambda x: len(x) == 3
+        #XXX TODO support schema names
+
+        for fk_pair in self.foreign_keys:
+            _cache_key = []
+            for fk in fk_pair:
+                fk = fk.split(".")
+                if _has_schema(fk):
+                    _schema, table_name, column_name = fk
+                else:
+                    table_name, column_name = fk
+                k = self._get_cache_key_name(table_name, column_name)
+                self.cache_set.add(k)
+                # flat set of all cache keys
+                _cache_key.append(k)
+
+            _cache_key = tuple(_cache_key)
+            self.cache[_cache_key] = {}
+
+    def _get_cache_key_name(self, table_name, column_name):
+        return table_name + "." + column_name
+
+    def _get_cache_tuple_key(self, k):
+        for cache_tuple in self.cache:
+            if k in cache_tuple:
+                return cache_tuple
+        return None
+
+    def _cacheable(self, cache_key):
+        return cache_key in self.cache_set
+
+    def _loadible_from_cache(self, cache_tuple, old_value):
+        return old_value in self.cache[cache_tuple]
+
+    def _load_from_cache(self, cache_tuple, old_value):
+        return self.cache[cache_tuple][old_value]
 
     def obfuscate_line(self, table, line):
         column_info = self.parser.schema[table]
 
+        line_split = line.split(self.COPY_DELIM)
         new_line = []
-        import ipdb; ipdb.set_trace()
-        for idx, f in enumerate(line.split(self.COPY_DELIM)):
+        for idx, f in enumerate(line_split):
             f = f.strip()
-            if idx in column_info:
-                column_name, obfuscator = column_info[idx]
 
-                #XXX add logic to `remember' what we casted.
-                f = obfuscator.obfuscate(f)
-            new_line.append(f)
+            if idx not in column_info or f == self.NULL:
+                new_line.append(f)
+                continue
+
+            column_name, obfuscator = column_info[idx]
+            possible_cache_key = self._get_cache_key_name(table, column_name)
+
+            if not self._cacheable(possible_cache_key):
+                new_line.append(obfuscator.obfuscate(f))
+                continue
+
+            out_value = self.load_or_set(possible_cache_key, obfuscator, f)
+            new_line.append(out_value)
 
         new_line = self.COPY_DELIM.join(new_line)
-        print new_line
         return new_line
 
+    def load_or_set(self, cache_key, obfuscator, value):
+        """
+        Determine if a value should be obfuscated and set in the cache.
+        Or, if this value has already been obfuscated then load.
+        """
+        cache_tuple = self._get_cache_tuple_key(cache_key)
+
+        if self._loadible_from_cache(cache_tuple, value):
+            return self._load_from_cache(cache_tuple, value)
+
+        out_value = obfuscator.obfuscate(value)
+        self.cache[cache_tuple][value] = out_value
+        return out_value
+
     def run(self):
+        if self.foreign_keys:
+            self._set_cache_keys()
 
         current_table = None
         should_parse = True
-        got_tables = []
+        line_number = 0
         with open(self.dump_file, "r") as of:
             for line in of:
 
                 if should_parse:
                     self.parser.parse(line)
 
+                if line.startswith(self.ENDLINE):
+                    current_table = None
+
                 if line[:4] == "COPY":
                     current_table = self.get_table(line)
+                    # Hit the COPY statement.
+                    # Do not need to parse schema anymore
                     should_parse = False
 
                 if line[:4] != "COPY" and current_table in self.parser.schema.keys():
-                    print line
                     line = self.obfuscate_line(current_table, line)
+                    line = line + "\n"
 
-                if self.ENDLINE in line:
-                    current_table = None
                 sys.stdout.write(line)
+                line_number += 1
 
 
 if __name__ == "__main__":
     dump_file = "DUMP.dump"
-    parser = PGDumpParser()
-    app = PGDumpObfuscator(dump_file, parser)
+    foreign_keys = [("activations.member_id", "member_ids.member_id")]
+    parser = PGDumpParser(foreign_keys=foreign_keys)
+
+    app = PGDumpObfuscator(dump_file, parser, foreign_keys=foreign_keys)
     app.run()
