@@ -1,0 +1,38 @@
+#!/usr/bin/env python
+
+"""
+Obfuscate a pg_dump file!
+
+usage: pg_obfuscate --dump [output.dump] or [-] for stdin
+"""
+import argparse
+import sys
+
+from pg_obfuscator import PGDumpParser, PGDumpObfuscator
+
+
+fk_message = (
+    "List of foreign keys to retain obfuscated values\n"
+    "format: tableA_name.column_name=table_B.column_name"
+)
+parser = argparse.ArgumentParser()
+parser.add_argument(
+    "-d",
+    "--dump",
+    help="a pg_dump output file. `-` to read from stdin",
+)
+parser.add_argument(
+    "--fks",
+    nargs="*",
+    help=fk_message,
+)
+args = parser.parse_args()
+
+if args.dump == "-":
+    dump = sys.stdin
+else:
+    dump = args.dump
+
+pg_parser = PGDumpParser(foreign_keys=args.fks)
+app = PGDumpObfuscator(dump, pg_parser, foreign_keys=args.fks)
+app.run()
