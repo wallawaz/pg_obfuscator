@@ -25,14 +25,20 @@ class Obfuscrator(object):
 
 
 class EmailObfuscator(Obfuscrator):
-
+    domains = [
+        "gmail.com",
+        "yahoo.com",
+        "example.com",
+        "important.com",
+        "foo.com",
+    ]
     def obfuscate(self, source):
         if "@" not in source:
             raise Exception("not a valid email")
-        mailbox = source[:self.source.find("@")]
-        domain = source[self.source.find("@"):]
+        mailbox = source.split("@")[0]
         mailbox = self._obfuscate(mailbox)
-        return mailbox + domain
+        domain = random.choice(self.domains)
+        return mailbox + "@" + domain
 
 
 class DateObfuscator(Obfuscrator):
@@ -41,7 +47,9 @@ class DateObfuscator(Obfuscrator):
         "timestamp without time zone": "%Y-%m-%d %H:%M:%S.%f",
         "date": "%Y-%m-%d",
     }
-    def __init__(self, dt, *args, **kwargs):
+    def __init__(self, *args, **kwargs):
+        args = list(args)
+        dt = args.pop(-1)
         super(DateObfuscator, self).__init__(*args, **kwargs)
         self.dt = dt
         self.fmt = None
@@ -65,4 +73,4 @@ class DateObfuscator(Obfuscrator):
         else:
             d_parsed = d_parsed - timedelta(days=delta)
 
-        return d_parsed.strftime(fmt)
+        return d_parsed.strftime(self.fmt)
