@@ -107,24 +107,22 @@ class PGDumpObfuscator(object):
         current_table = None
         should_parse = True
         line_number = 0
-        with open(self.dump_file, "r") as of:
-            for line in of:
+        for line in self.dump_file:
+            if should_parse:
+                self.parser.parse(line)
 
-                if should_parse:
-                    self.parser.parse(line)
+            if line.startswith(self.ENDLINE):
+                current_table = None
 
-                if line.startswith(self.ENDLINE):
-                    current_table = None
+            if line[:4] == "COPY":
+                current_table = self.get_table(line)
+                # Hit the COPY statement.
+                # Do not need to parse schema anymore
+                should_parse = False
 
-                if line[:4] == "COPY":
-                    current_table = self.get_table(line)
-                    # Hit the COPY statement.
-                    # Do not need to parse schema anymore
-                    should_parse = False
+            if line[:4] != "COPY" and current_table in self.parser.schema.keys():
+                line = self.obfuscate_line(current_table, line)
+                line = line + "\n"
 
-                if line[:4] != "COPY" and current_table in self.parser.schema.keys():
-                    line = self.obfuscate_line(current_table, line)
-                    line = line + "\n"
-
-                sys.stdout.write(line)
-                line_number += 1
+            sys.stdout.write(line)
+            line_number += 1

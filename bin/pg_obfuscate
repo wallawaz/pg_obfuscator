@@ -31,7 +31,7 @@ args = parser.parse_args()
 if args.dump == "-":
     dump = sys.stdin
 else:
-    dump = args.dump
+    dump = open(args.dump, "r")
 
 pg_parser = PGDumpParser(foreign_keys=args.fks)
 app = PGDumpObfuscator(dump, pg_parser, foreign_keys=args.fks)
